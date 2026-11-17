@@ -1,10 +1,12 @@
-"""Translate variant 12 assembly source into intermediate instructions."""
+"""Assemble variant 12 source into VM machine code."""
 
 import argparse
 from dataclasses import dataclass
 from pathlib import Path
 
 
+BITS_PER_BYTE = 8
+OPCODE_BITS = 5
 ADDRESS_BITS = 32
 CONSTANT_BITS = 32
 OFFSET_BITS = 8
@@ -24,6 +26,7 @@ COMMANDS = {
     "STORE": Command(10, (ADDRESS_BITS, ADDRESS_BITS)),
     "ADD": Command(13, (ADDRESS_BITS, ADDRESS_BITS, ADDRESS_BITS)),
 }
+COMMANDS_BY_OPCODE = {command.opcode: command for command in COMMANDS.values()}
 
 
 @dataclass(frozen=True)
@@ -88,12 +91,31 @@ def parse_program(source: str) -> list[Instruction]:
     return instructions
 
 
+def encode_instruction(instruction: Instruction) -> bytes:
+    """Pack an instruction produced by the parser in little-endian order."""
+    command = COMMANDS_BY_OPCODE[instruction.opcode]
+    word = instruction.opcode
+    bit_position = OPCODE_BITS
+    for operand, width in zip(
+        instruction.operands, command.operand_bits, strict=True
+    ):
+        word |= operand << bit_position
+        bit_position += width
+    byte_count = (bit_position + BITS_PER_BYTE - 1) // BITS_PER_BYTE
+    return word.to_bytes(byte_count, byteorder="little")
+
+
+def format_bytes(instruction_bytes: bytes) -> str:
+    """Format one encoded instruction as in the VM specification."""
+    return ", ".join(f"0x{byte:02X}" for byte in instruction_bytes)
+
+
 def main() -> None:
-    """Read assembly text and print its intermediate fields in test mode."""
+    """Assemble a source file and report its instruction count."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path, help="UTF-8 assembly source")
     parser.add_argument("output", type=Path, help="path for the output binary")
-    parser.add_argument("--test", action="store_true", help="print VM fields")
+    parser.add_argument("--test", action="store_true", help="print VM bytes")
     args = parser.parse_args()
 
     try:
@@ -101,9 +123,16 @@ def main() -> None:
     except (OSError, ValueError) as error:
         parser.error(f"{args.source}: {error}")
 
+    encoded = [encode_instruction(instruction) for instruction in program]
+    try:
+        args.output.write_bytes(b"".join(encoded))
+    except OSError as error:
+        parser.error(f"{args.output}: {error}")
+
+    print(f"Assembled instructions: {len(program)}")
     if args.test:
-        for instruction in program:
-            print(instruction.format_fields())
+        for instruction_bytes in encoded:
+            print(format_bytes(instruction_bytes))
 
 
 if __name__ == "__main__":
